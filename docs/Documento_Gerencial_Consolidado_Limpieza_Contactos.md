@@ -1,6 +1,6 @@
 # Documento Gerencial Consolidado — Proceso de Limpieza de Base de Contactos
 **Marketing Cloud Engagement — Seguros Bolívar**
-**Fecha:** Junio 2026 | **Estado:** Grupos 1-3 en ejecución | Grupo 4 en planeación
+**Fecha:** Junio 2026 | **Estado:** Grupos 1-3 en ejecución | Grupo 4 con proceso construido y validado
 
 ---
 
@@ -13,8 +13,8 @@ El proceso de higiene de base de contactos en MCE se organiza en **4 grupos inde
 | **Grupo 1** | Email y celular inválidos | 723 | ✅ Validado |
 | **Grupo 2** | Duplicados (mismo email + mismo móvil) | 432,473 | 🔄 En ejecución (corrigiendo fuente del lote) |
 | **Grupo 3** | Inactivos — sin apertura ni clic en 12 meses | 1,127 | ✅ Validado, pendiente ejecutar |
-| **Grupo 4** | Contactos sin canal de contacto ("fantasma") | 824,896 | 📋 Identificado, sin proceso de borrado aún |
-| **Total identificado** | | **1,259,219** | |
+| **Grupo 4** | Contactos sin canal de contacto ("fantasma") | 450,653 | ✅ Proceso construido y validado, pendiente ejecutar |
+| **Total identificado** | | **884,976** | |
 
 ---
 
@@ -43,7 +43,7 @@ Automation Studio — Grupo N
         └── Registra resultado en DE_Log_Borrado_Contactos_P1
 ```
 
-**Log centralizado:** `DE_Log_Borrado_Contactos_P1` (External Key: `DE_Log_Borrado_Contact_P1`) registra todas las ejecuciones de los 3 grupos con: fecha, grupo, lote, cantidad, operation ID, status y mensaje.
+**Log centralizado:** `DE_Log_Borrado_Contactos_P1` (External Key: `DE_Log_Borrado_Contact_P1`) registra todas las ejecuciones de los 4 grupos con: fecha, grupo, lote, cantidad, operation ID, status y mensaje.
 
 ---
 
@@ -117,25 +117,57 @@ La primera versión (sin mínimo de envíos ni protección de 90 días) arrojaba
 
 ## 6. Grupo 4 — Contactos sin Canal de Contacto ("Fantasma")
 
-### Estado: identificado, sin proceso de borrado construido
-
-Corresponde a contactos existentes en Contact Builder que **no tienen correo ni móvil registrado** — no son visibles desde `_Subscribers` vía Query Studio porque no tienen ningún canal de contacto asociado.
+### Descripción
+Contactos existentes en Contact Builder que **no tienen correo ni móvil registrado** — no visibles desde `_Subscribers` vía Query Studio. Se identifican y clasifican desde la DE "Contacts without Channel Addresses" por la estructura de su `ContactKey`.
 
 | Dato | Valor |
 |------|-------|
 | Fuente | DE "Contacts without Channel Addresses" |
-| External Key | `13157682-8EF4-477A-A7D6-BA5773ABC570` |
-| Registros identificados | 824,896 |
-| Cambios en esta fase | **Ninguno** — sin ajustes, sin automation construido |
+| External Key fuente | `13157682-8EF4-477A-A7D6-BA5773ABC570` |
+| Universo total de la DE | 723,565 clasificados |
+| **Contactos a borrar** | **450,653** |
+| Contactos protegidos | 272,912 |
+| Lotes necesarios | 1 lote único (< 850,000) |
 
-### Próximos pasos (fase futura)
-- Definir si estos contactos tienen valor histórico (CRM, pólizas) antes de proceder
-- Diseñar automation de borrado análogo a los Grupos 1-3, referenciando esta DE directamente
-- Evaluar si requiere las mismas protecciones (unsubscribed, envío reciente) — probablemente no aplique al no tener canal de envío
+### Clasificación por estructura de ContactKey
+
+| Familia | Cantidad | Decisión |
+|---------|----------|----------|
+| Estructura de Correo (email como ContactKey sin canal real) | 349,906 | 🗑️ Borrar |
+| Solo Números (cédulas puras / celulares) | 88,872 | 🗑️ Borrar |
+| Estructura Rota: Múltiples IDs unidos por "y" | 5,547 | 🗑️ Borrar |
+| Documento con separador de Guion | 4,712 | 🗑️ Borrar |
+| Otros Alfanuméricos No Clasificados | 1,244 | 🗑️ Borrar |
+| Estructura Rota: Datos separados por Pipe | 191 | 🗑️ Borrar |
+| ID Nativo Salesforce CRM (003) | 181 | 🗑️ Borrar |
+| **Documento Pegado sin Símbolos (CC, CE, NIT, TI, RC...)** | **212,201** | ✅ Proteger |
+| **Documento con separador de Dos Puntos (CC:, CE:, PP:)** | **46,599** | ✅ Proteger |
+| **UUID / GUID de Sistema Externo** | **12,362** | ✅ Proteger |
+| **Texto Completo: CÉDULA DE...** | **1,750** | ✅ Proteger |
+
+### Criterio de protección
+La compañía administra ContactKeys con la estructura **tipo de documento + número de documento**. Las categorías protegidas representan identificadores válidos en esa convención (documentos con prefijo, con separador de dos puntos, o GUIDs de sistemas externos). Las categorías borradas corresponden a estructuras rotas, correos sin canal, numéricos sin contexto o IDs de sistemas que ya no están activos (Salesforce CRM — piloto de 2 meses, ya descontinuado).
+
+### Criterio de identificación — WHERE clause
+```sql
+WHERE Sub.Familia_Estructura IN (
+    'Estructura de Correo (Normales o Basura tipo www@)',
+    'Solo Números (Cédulas puras, celulares con espacio o ceros adelante)',
+    'Estructura Rota: Múltiples IDs unidos por y',
+    'Documento con separador de Guion (Ej. CCxxxx-x)',
+    'Otros Alfanuméricos No Clasificados',
+    'ID Nativo de Salesforce CRM (Contact/003)',
+    'Estructura Rota: Datos separados por Pipe (|)'
+)
+```
+> Se usa `IN` con la lista explícita de categorías a borrar (no `NOT IN`) para que cualquier categoría nueva que aparezca en el futuro quede automáticamente protegida.
+
+### Cobertura multi-BU
+Estos contactos no tienen canal de contacto activo, por lo que la protección de envío reciente no aplica — nunca han recibido comunicaciones.
 
 ---
 
-## 7. Lecciones Operativas Aplicadas a los 3 Grupos
+## 7. Lecciones Operativas Aplicadas a los 4 Grupos
 
 | Lección | Ajuste realizado |
 |---------|------------------|
@@ -149,22 +181,23 @@ Corresponde a contactos existentes en Contact Builder que **no tienen correo ni 
 
 ## 8. Cifras Consolidadas
 
-| Grupo | Identificados | % del total | Estado de ejecución |
-|-------|---------------|-------------|---------------------|
-| Grupo 1 — Inválidos | 723 | 0.06% | Ejecutado y validado |
-| Grupo 2 — Duplicados | 432,473 | 34.3% | En corrección de fuente, pendiente re-ejecución |
-| Grupo 3 — Inactivos | 1,127 | 0.09% | Validado, pendiente ejecución |
-| Grupo 4 — Sin canal | 824,896 | 65.5% | Identificado, sin proceso aún |
-| **Total** | **1,259,219** | **100%** | |
+| Grupo | A borrar | % del total a borrar | Estado de ejecución |
+|-------|----------|----------------------|---------------------|
+| Grupo 1 — Inválidos | 723 | 0.08% | ✅ Ejecutado y validado |
+| Grupo 2 — Duplicados | 432,473 | 48.9% | 🔄 Corrección de fuente aplicada, pendiente re-ejecución |
+| Grupo 3 — Inactivos | 1,127 | 0.13% | ✅ Validado, pendiente ejecución |
+| Grupo 4 — Sin canal | 450,653 | 50.9% | ✅ Proceso construido y validado, pendiente ejecución |
+| **Total** | **884,976** | **100%** | |
 
 > Base total de contactos en MCE: **7,895,021** (Contact Builder, corte 06/29/2026).
-> Los Grupos 1-3 representan una limpieza del **5.7%** de la base activa con canal de contacto válido. El Grupo 4, de construirse, representaría una reducción adicional del **10.4%** sobre el total de la base.
+> Los 4 grupos representan una limpieza del **11.2%** del total de la base.
+> Tras ejecutar los 4 grupos la base quedaría en aproximadamente **7,010,045 contactos**.
 
 ---
 
 ## 9. Trazabilidad y Auditoría
 
-Toda ejecución de los Grupos 1-3 queda registrada en `DE_Log_Borrado_Contactos_P1` con: fecha, grupo, lote, cantidad de registros, Operation ID de la API, status (OK/Skipped/Error/Exception) y mensaje de respuesta — permitiendo reconstruir el historial completo del proceso ante cualquier auditoría posterior.
+Toda ejecución de los Grupos 1-4 queda registrada en `DE_Log_Borrado_Contactos_P1` con: fecha, grupo, lote, cantidad de registros, Operation ID de la API, status (OK/Skipped/Error/Exception) y mensaje de respuesta — permitiendo reconstruir el historial completo del proceso ante cualquier auditoría posterior.
 
 ---
 
